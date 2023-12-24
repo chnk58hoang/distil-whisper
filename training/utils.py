@@ -15,8 +15,11 @@ def create_local_dataset(wav_directory, metadata_file):
     f.close()
     all_wav_paths = sorted(all_wav_paths)
     all_transcriptions = [' '.join(line.split(' ')[1:])[:-1] for line in all_lines]
-    dataset_dict = {"audio": all_wav_paths, "sentence": all_transcriptions}
+    dataset_dict = {"path": all_wav_paths, "audio": all_wav_paths, "sentence": all_transcriptions}
     dataset = Dataset.from_dict(dataset_dict).cast_column("audio", Audio())
     return dataset
 
 
+dataset = create_local_dataset('/home/hoang/Downloads/vivos/train/waves',
+                               '/home/hoang/Downloads/vivos/train/prompts.txt')
+print(dataset[0])
