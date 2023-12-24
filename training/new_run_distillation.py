@@ -35,12 +35,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
+from utils import create_local_dataset
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from datasets import (
     DatasetDict,
     IterableDataset,
     IterableDatasetDict,
+    Dataset,
     concatenate_datasets,
     interleave_datasets,
     load_dataset,
@@ -133,50 +135,34 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    train_dataset_name: str = field(
-        default=None,
+    train_wav_dir: str = field(
+        default="/path/to/the/train/data_split",
         metadata={
-            "help": "The name of the training dataset to use (via the datasets library). Load and combine "
-                    "multiple datasets by separating dataset ids by a '+' symbol. For example, to load LibriSpeech "
-                    "and Common Voice, set `train_dataset_name='librispeech_asr+common_voice'`."
-        },
+            "help": "Path to the directory contains all audio files of train dataset split"
+        }
     )
-    train_dataset_config_name: Optional[str] = field(
-        default=None,
+
+    valid_wav_dirs: str = field(
+        default="/path/to/the/valid/data_split",
         metadata={
-            "help": "The configuration name of the training dataset to use (via the datasets library). Load and combine "
-                    "multiple datasets by separating dataset configs by a '+' symbol. Note that the order of the configs should "
-                    "match the order of the datasets."
-        },
+            "help": "Path to the directory contains all audio files of valid dataset split"
+        }
     )
-    train_dataset_samples: str = field(
-        default=None,
+
+    train_transcript_file: str = field(
+        default="/path/to/the/train/transcript_file",
         metadata={
-            "help": "Number of samples in each dataset when loading multiple datasets with streaming mode. "
-                    "Not required when using one dataset or non-streaming mode. The sample values provide the sampling "
-                    "probability for each dataset. Setting them equal to the number of sample values ensures that every "
-                    "sample from every dataset is used once per epoch."
-        },
+            "help": "Path to the transcript file of train data split"
+        }
     )
-    eval_dataset_name: str = field(
-        default=None,
+
+    valid_transcript_file: str = field(
+        default="/path/to/the/valid/transcript_file",
         metadata={
-            "help": "The name of the evaluation dataset to use (via the datasets library). Defaults to the training "
-                    "dataset name if unspecified. Load multiple evaluation datasets by separating dataset "
-                    "ids by a '+' symbol."
-        },
+            "help": "Path to the transcript file of valid data split"
+        }
     )
-    eval_dataset_config_name: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "The configuration name of the evaluation dataset to use (via the datasets library). Defaults to the "
-                    "training dataset config name if unspecified."
-        },
-    )
-    dataset_cache_dir: Optional[str] = field(
-        default=None,
-        metadata={"help": "Path to cache directory for saving and loading datasets"},
-    )
+
     overwrite_cache: bool = field(
         default=False,
         metadata={"help": "Overwrite the cached training and evaluation sets"},
@@ -551,87 +537,32 @@ def convert_dataset_str_to_list(
     return dataset_names_dict
 
 
-def load_multiple_datasets(
-        dataset_names: Union[List, str],
-        dataset_config_names: Union[List, str],
-        splits: Optional[Union[List, str]] = None,
+def load_local_dataset(
+        dataset_wav_dir: str,
+        dataset_transcript_file: str,
         text_column_names: Optional[List] = None,
         sampling_rate: Optional[int] = 16000,
-        stopping_strategy: Optional[str] = "first_exhausted",
-        dataset_samples: Optional[Union[List, np.array]] = None,
-        streaming: Optional[bool] = True,
-        seed: Optional[int] = None,
-        accelerator: Optional[Accelerator] = None,
         use_pseudo_labels: float = None,
         **kwargs,
-) -> IterableDataset:
-    dataset_names_dict = convert_dataset_str_to_list(
-        dataset_names, dataset_config_names, splits, text_column_names, dataset_samples
-    )
+) -> Dataset:
+    dataset = create_local_dataset(wav_directory=dataset_wav_dir, metadata_file=dataset_transcript_file)
+    # resample to specified sampling rate
+    dataset = dataset.cast_column("audio", datasets.features.Audio(sampling_rate))
+    dataset_features = dataset.features.keys()
+    columns_to_keep = {"audio", text_column_names}
 
-    if dataset_samples is not None:
-        dataset_samples = [ds_dict["samples"] for ds_dict in dataset_names_dict]
-        probabilities = np.array(dataset_samples) / np.sum(dataset_samples)
-    else:
-        probabilities = None
-
-    all_datasets = []
-    # iterate over the datasets we want to interleave
-    for dataset_dict in tqdm(
-            dataset_names_dict,
-            desc="Combining datasets...",
-            disable=not accelerator.is_local_main_process if accelerator is not None else False,
-    ):
-        dataset = load_dataset(
-            dataset_dict["name"],
-            dataset_dict["config"],
-            split=dataset_dict["split"],
-            streaming=streaming,
-            **kwargs,
-        )
-        # resample to specified sampling rate
-        dataset = dataset.cast_column("audio", datasets.features.Audio(sampling_rate))
-        dataset_features = dataset.features.keys()
-        columns_to_keep = {"audio", "text"}
-
-        if dataset_dict["text_column_name"] not in dataset_features:
+    if use_pseudo_labels:
+        if "whisper_transcript" not in dataset_features:
             raise ValueError(
-                f"Text column name {dataset_dict['text_column_name']} not found in dataset"
-                f" '{dataset_dict['name']}'. Make sure to set `--text_column_name` to the"
-                f" correct text column - one of {', '.join(dataset_features)}."
+                f"Pseudo-label column `whisper_transcript` not found in dataset feature. Ensure"
+                "pseudo-labels are present in the dataset under this column name, or train directly on the text "
+                "labels by setting `--use_pseudo_labels=False` and defining the appropriate `--text_column_name`."
             )
+        columns_to_keep.add("whisper_transcript")
+    dataset_features = dataset.features.keys()
+    dataset = dataset.remove_columns(set(dataset_features - columns_to_keep))
 
-        # blanket renaming of all transcription columns to text
-        if dataset_dict["text_column_name"] != "text":
-            dataset = dataset.rename_column(dataset_dict["text_column_name"], "text")
-
-        if use_pseudo_labels:
-            if "whisper_transcript" not in dataset_features:
-                raise ValueError(
-                    f"Pseudo-label column `whisper_transcript` not found in dataset {dataset_dict['name']}. Ensure"
-                    "pseudo-labels are present in the dataset under this column name, or train directly on the text "
-                    "labels by setting `--use_pseudo_labels=False` and defining the appropriate `--text_column_name`."
-                )
-            columns_to_keep.add("whisper_transcript")
-        dataset_features = dataset.features.keys()
-        dataset = dataset.remove_columns(set(dataset_features - columns_to_keep))
-        all_datasets.append(dataset)
-
-    if len(all_datasets) == 1:
-        # we have a single dataset so just return it as is
-        return all_datasets[0]
-
-    if streaming:
-        interleaved_dataset = interleave_datasets(
-            all_datasets,
-            stopping_strategy=stopping_strategy,
-            probabilities=probabilities,
-            seed=seed,
-        )
-    else:
-        interleaved_dataset = concatenate_datasets(all_datasets)
-
-    return interleaved_dataset
+    return dataset
 
 
 def get_layers_to_supervise(student_layers: int, teacher_layers: int) -> Dict:
@@ -820,70 +751,23 @@ def main():
     set_seed(training_args.seed)
 
     if training_args.do_train:
-        raw_datasets["train"] = load_multiple_datasets(
-            data_args.train_dataset_name,
-            data_args.train_dataset_config_name,
-            splits=data_args.train_split_name,
+        raw_datasets["train"] = load_local_dataset(
+            dataset_war_dir=data_args.train_wav_dir,
+            dataset_transcript_file=data_args.train_transcript_file,
             text_column_names=data_args.text_column_name,
-            use_pseudo_labels=data_args.use_pseudo_labels,
-            streaming=data_args.streaming,
-            dataset_samples=data_args.train_dataset_samples,
-            seed=training_args.seed,
-            accelerator=accelerator,
-            cache_dir=data_args.dataset_cache_dir,
-            token=model_args.token,
+            use_pseudo_labels=data_args.use_pseudo_labels
         )
         raw_datasets_train_features = list(raw_datasets["train"].features.keys())
 
     if training_args.do_eval:
-        dataset_names_dict = convert_dataset_str_to_list(
-            data_args.eval_dataset_name if data_args.eval_dataset_name else data_args.train_dataset_name,
-            data_args.eval_dataset_config_name
-            if data_args.eval_dataset_config_name
-            else data_args.train_dataset_config_name,
-            splits=data_args.eval_split_name,
+        raw_datasets["eval"] = load_local_dataset(
+            dataset_war_dir=data_args.valid_wav_dir,
+            dataset_transcript_file=data_args.valid_transcript_file,
             text_column_names=data_args.eval_text_column_name,
+            use_pseudo_labels=False
         )
-        all_eval_splits = []
-        if len(dataset_names_dict) == 1:
-            # load a single eval set
-            dataset_dict = dataset_names_dict[0]
-            all_eval_splits.append("eval")
-            raw_datasets["eval"] = load_dataset(
-                dataset_dict["name"],
-                dataset_dict["config"],
-                split=dataset_dict["split"],
-                cache_dir=data_args.dataset_cache_dir,
-                token=model_args.token,
-                streaming=data_args.streaming,
-            )
-            if data_args.eval_text_column_name != "text":
-                raw_datasets["eval"] = raw_datasets["eval"].rename_column(data_args.eval_text_column_name, "text")
-        else:
-            # load multiple eval sets
-            for dataset_dict in dataset_names_dict:
-                if dataset_dict["name"] == "esb/diagnostic-dataset":
-                    # for the ESB diagnostic dataset, the dataset name is effectively the config
-                    pretty_name = f"{dataset_dict['config']}-diagnostic/{dataset_dict['split']}"
-                else:
-                    pretty_name = f"{dataset_dict['name'].split('/')[-1]}/{dataset_dict['split'].replace('.', '-')}"
-                all_eval_splits.append(pretty_name)
-                raw_datasets[pretty_name] = load_dataset(
-                    dataset_dict["name"],
-                    dataset_dict["config"],
-                    split=dataset_dict["split"],
-                    cache_dir=data_args.dataset_cache_dir,
-                    token=model_args.token,
-                    streaming=data_args.streaming,
-                )
-                # make column names consistent (text, audio)
-                if dataset_dict["text_column_name"] != "text":
-                    raw_datasets[pretty_name] = raw_datasets[pretty_name].rename_column(
-                        dataset_dict["text_column_name"], "text"
-                    )
-                raw_datasets[pretty_name] = raw_datasets[pretty_name].remove_columns(
-                    set(raw_datasets[pretty_name].features.keys()) - {"audio", "text"}
-                )
+        if data_args.eval_text_column_name != "text":
+            raw_datasets["eval"] = raw_datasets["eval"].rename_column(data_args.eval_text_column_name, "text")
 
     if not training_args.do_train and not training_args.do_eval:
         raise ValueError(
@@ -1035,12 +919,11 @@ def main():
         )
 
     if training_args.do_eval and data_args.max_eval_samples is not None:
-        for eval_split in all_eval_splits:
-            raw_datasets[eval_split] = (
-                raw_datasets[eval_split].take(data_args.max_eval_samples)
-                if data_args.streaming
-                else raw_datasets[eval_split].select(range(data_args.max_eval_samples))
-            )
+        raw_datasets["eval"] = (
+            raw_datasets["eval"].take(data_args.max_eval_samples)
+            if data_args.streaming
+            else raw_datasets["eval"].select(range(data_args.max_eval_samples))
+        )
 
     # 10.3: filter training data based on WER threshold -> this is KEY to good distillation performance
     def is_wer_in_range(ground_truth, whisper_transcript):
@@ -1190,17 +1073,16 @@ def main():
             else map_fn_train()
         )
     if training_args.do_eval:
-        for eval_split in all_eval_splits:
-            raw_datasets_eval_features = list(raw_datasets[eval_split].features.keys())
-            map_fn_eval = partial(
-                raw_datasets[eval_split].map, function=prepare_eval_dataset, remove_columns=raw_datasets_eval_features
+        raw_datasets_eval_features = list(raw_datasets["eval"].features.keys())
+        map_fn_eval = partial(
+            raw_datasets["eval"].map, function=prepare_eval_dataset, remove_columns=raw_datasets_eval_features
+        )
+        if accelerator.is_main_process:
+            vectorized_datasets["eval"] = (
+                map_fn_eval(num_proc=num_workers, desc="preprocess eval dataset")
+                if not data_args.streaming
+                else map_fn_eval()
             )
-            if accelerator.is_main_process:
-                vectorized_datasets[eval_split] = (
-                    map_fn_eval(num_proc=num_workers, desc="preprocess eval dataset")
-                    if not data_args.streaming
-                    else map_fn_eval()
-                )
 
     # 10.5: Filter training data with inputs longer than `max_input_length`
     def is_audio_in_length_range(length):
@@ -1567,42 +1449,41 @@ def main():
                     train_time += time.time() - train_start
                     student_model.eval()
                     # ======================== Evaluating ==============================
-                    for eval_split in all_eval_splits:
-                        eval_metrics = []
-                        eval_preds = []
-                        eval_labels = []
-                        eval_start = time.time()
+                    eval_metrics = []
+                    eval_preds = []
+                    eval_labels = []
+                    eval_start = time.time()
 
-                        validation_dataloader = DataLoader(
-                            vectorized_datasets[eval_split],
-                            collate_fn=data_collator,
-                            batch_size=per_device_eval_batch_size,
-                            drop_last=False,
-                            num_workers=dataloader_num_workers,
-                            pin_memory=training_args.dataloader_pin_memory,
-                        )
-                        validation_dataloader = accelerator.prepare(validation_dataloader)
+                    validation_dataloader = DataLoader(
+                        vectorized_datasets["eval"],
+                        collate_fn=data_collator,
+                        batch_size=per_device_eval_batch_size,
+                        drop_last=False,
+                        num_workers=dataloader_num_workers,
+                        pin_memory=training_args.dataloader_pin_memory,
+                    )
+                    validation_dataloader = accelerator.prepare(validation_dataloader)
 
-                        for batch in tqdm(
-                                validation_dataloader,
-                                desc=f"Evaluating {eval_split}...",
-                                position=2,
-                                disable=not accelerator.is_local_main_process,
-                        ):
-                            # Model forward
-                            eval_metric = eval_step(batch)
-                            eval_metric = accelerator.gather_for_metrics(eval_metric)
-                            eval_metrics.append(eval_metric)
+                    for batch in tqdm(
+                            validation_dataloader,
+                            desc=f"Evaluating ...",
+                            position=2,
+                            disable=not accelerator.is_local_main_process,
+                    ):
+                        # Model forward
+                        eval_metric = eval_step(batch)
+                        eval_metric = accelerator.gather_for_metrics(eval_metric)
+                        eval_metrics.append(eval_metric)
 
-                            # generation
-                            if training_args.predict_with_generate:
-                                generated_ids = generate_step(batch)
-                                # Gather all predictions and targets
-                                generated_ids, labels = accelerator.gather_for_metrics(
-                                    (generated_ids, batch["labels"])
-                                )
-                                eval_preds.extend(generated_ids)
-                                eval_labels.extend(labels)
+                        # generation
+                        if training_args.predict_with_generate:
+                            generated_ids = generate_step(batch)
+                            # Gather all predictions and targets
+                            generated_ids, labels = accelerator.gather_for_metrics(
+                                (generated_ids, batch["labels"])
+                            )
+                            eval_preds.extend(generated_ids)
+                            eval_labels.extend(labels)
 
                         eval_time = time.time() - eval_start
                         # normalize eval metrics
@@ -1625,7 +1506,7 @@ def main():
                                 norm_pred_str,
                                 norm_label_str,
                                 step=cur_step,
-                                prefix=eval_split,
+                                prefix="eval",
                             )
 
                         # Print metrics and update progress bar
@@ -1640,7 +1521,7 @@ def main():
                             train_time=eval_time,
                             step=cur_step,
                             epoch=epoch,
-                            prefix=eval_split,
+                            prefix="eval",
                         )
 
                     # flush the train metrics

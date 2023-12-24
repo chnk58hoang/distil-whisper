@@ -32,6 +32,7 @@ import evaluate
 import numpy as np
 import torch
 import transformers
+from utils import create_local_dataset
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from datasets import (
@@ -144,22 +145,22 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    dataset_name: str = field(
-        default=None,
-        metadata={"help": "The name of the dataset to use (via the datasets library)."},
-    )
-    dataset_config_name: Optional[str] = field(
-        default=None,
-        metadata={"help": "The configuration name of the dataset to use (via the datasets library)."},
-    )
-    dataset_cache_dir: Optional[str] = field(
-        default=None,
-        metadata={"help": "Path to cache directory for saving and loading datasets"},
-    )
-    overwrite_cache: bool = field(
-        default=False,
-        metadata={"help": "Overwrite the cached training and evaluation sets"},
-    )
+    # dataset_name: str = field(
+    #     default=None,
+    #     metadata={"help": "The name of the dataset to use (via the datasets library)."},
+    # )
+    # dataset_config_name: Optional[str] = field(
+    #     default=None,
+    #     metadata={"help": "The configuration name of the dataset to use (via the datasets library)."},
+    # )
+    # dataset_cache_dir: Optional[str] = field(
+    #     default=None,
+    #     metadata={"help": "Path to cache directory for saving and loading datasets"},
+    # )
+    # overwrite_cache: bool = field(
+    #     default=False,
+    #     metadata={"help": "Overwrite the cached training and evaluation sets"},
+    # )
     preprocessing_num_workers: Optional[int] = field(
         default=None,
         metadata={"help": "The number of processes to use for the preprocessing."},
@@ -204,6 +205,21 @@ class DataTrainingArguments:
             )
         },
     )
+
+    dataset_split_wav_dirs: str = field(
+        default="/path/to/the/train/data_split+/path/to/the/valid/data_split",
+        metadata={
+            "help": "Path to the directory contains all audio files of this data split"
+        }
+    )
+
+    dataset_split_transcript_files: str = field(
+        default="/path/to/the/train/transcript_file+/path/to/the/valid/transcript_file",
+        metadata={
+            "help": "Path to the transcript file of this data split"
+        }
+    )
+
     wandb_project: str = field(
         default="distil-whisper",
         metadata={"help": "The name of the wandb project."},
@@ -450,26 +466,10 @@ def main():
     token = model_args.token if model_args.token is not None else HfFolder().get_token()
 
     data_splits = data_args.dataset_split_name.split("+")
-    for split in data_splits:
-        if data_args.streaming:
-            raw_datasets[split] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=split,
-                cache_dir=data_args.dataset_cache_dir,
-                token=token,
-                streaming=True,
-            )
-        else:
-            raw_datasets[split] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=split,
-                cache_dir=data_args.dataset_cache_dir,
-                token=token,
-                streaming=False,
-                num_proc=data_args.preprocessing_num_workers,
-            )
+    data_split_wav_dirs = data_args.dataset_split_wav_dirs.split("+")
+    data_split_transcript_files = data_args.dataset_split_transcript_files.split("+")
+    for split, wav_dir, transcript_file in zip(data_splits, data_split_wav_dirs, data_split_transcript_files):
+        raw_datasets[split] = create_local_dataset(wav_directory=wav_dir, metadata_file=transcript_file)
 
     if data_args.audio_column_name not in next(iter(raw_datasets.values())).column_names:
         raise ValueError(
