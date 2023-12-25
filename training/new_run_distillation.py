@@ -135,15 +135,15 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    train_wav_dir: str = field(
-        default="/path/to/the/train/data_split",
+    train_arrow_file: str = field(
+        default="/path/to/the/train/.arrow file",
         metadata={
             "help": "Path to the directory contains all audio files of train dataset split"
         }
     )
 
-    valid_wav_dirs: str = field(
-        default="/path/to/the/valid/data_split",
+    valid_arrow_file: str = field(
+        default="/path/to/the/valid/.arrow file",
         metadata={
             "help": "Path to the directory contains all audio files of valid dataset split"
         }
@@ -538,18 +538,17 @@ def convert_dataset_str_to_list(
 
 
 def load_local_dataset(
-        dataset_wav_dir: str,
-        dataset_transcript_file: str,
-        text_column_names: Optional[List] = None,
+        arrow_file: str,
+        text_column_name: str,
         sampling_rate: Optional[int] = 16000,
         use_pseudo_labels: float = None,
-        **kwargs,
 ) -> Dataset:
-    dataset = create_local_dataset(wav_directory=dataset_wav_dir, metadata_file=dataset_transcript_file)
+    dataset = Dataset.from_file(arrow_file)
     # resample to specified sampling rate
     dataset = dataset.cast_column("audio", datasets.features.Audio(sampling_rate))
+    dataset = dataset.rename_column(text_column_name, "text")
     dataset_features = dataset.features.keys()
-    columns_to_keep = {"audio", text_column_names}
+    columns_to_keep = {"audio", text_column_name}
 
     if use_pseudo_labels:
         if "whisper_transcript" not in dataset_features:
@@ -752,18 +751,16 @@ def main():
 
     if training_args.do_train:
         raw_datasets["train"] = load_local_dataset(
-            dataset_war_dir=data_args.train_wav_dir,
-            dataset_transcript_file=data_args.train_transcript_file,
-            text_column_names=data_args.text_column_name,
+            arrow_file=data_args.train_arrow_file,
+            text_column_name=data_args.text_column_name,
             use_pseudo_labels=data_args.use_pseudo_labels
         )
         raw_datasets_train_features = list(raw_datasets["train"].features.keys())
 
     if training_args.do_eval:
         raw_datasets["eval"] = load_local_dataset(
-            dataset_war_dir=data_args.valid_wav_dir,
-            dataset_transcript_file=data_args.valid_transcript_file,
-            text_column_names=data_args.eval_text_column_name,
+            arrow_file=data_args.valid_arrow_file,
+            text_column_name=data_args.eval_text_column_name,
             use_pseudo_labels=False
         )
         if data_args.eval_text_column_name != "text":

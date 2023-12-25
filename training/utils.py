@@ -20,6 +20,3 @@ def create_local_dataset(wav_directory, metadata_file):
     return dataset
 
 
-dataset = create_local_dataset('/home/hoang/Downloads/vivos/train/waves',
-                               '/home/hoang/Downloads/vivos/train/prompts.txt')
-print(dataset[0])
