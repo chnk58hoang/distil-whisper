@@ -13,10 +13,10 @@ def create_local_dataset(wav_directory, metadata_file):
     with open(metadata_file, 'r') as f:
         all_lines = f.readlines()
     f.close()
+    all_lines = sorted(all_lines)
     all_wav_paths = sorted(all_wav_paths)
-    all_transcriptions = [' '.join(line.split(' ')[1:])[:-1] for line in all_lines]
-    dataset_dict = {"path": all_wav_paths, "audio": all_wav_paths, "sentence": all_transcriptions}
+    all_transcriptions = [' '.join(line.split(' ')[1:])[:-1].lower() for line in all_lines]
+    dataset_dict = {"path": all_wav_paths, "audio": all_wav_paths,
+                    "sentence": all_transcriptions}
     dataset = Dataset.from_dict(dataset_dict).cast_column("audio", Audio())
     return dataset
-
-

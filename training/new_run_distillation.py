@@ -548,7 +548,7 @@ def load_local_dataset(
     dataset = dataset.cast_column("audio", datasets.features.Audio(sampling_rate))
     dataset = dataset.rename_column(text_column_name, "text")
     dataset_features = dataset.features.keys()
-    columns_to_keep = {"audio", text_column_name}
+    columns_to_keep = {"audio", "text"}
 
     if use_pseudo_labels:
         if "whisper_transcript" not in dataset_features:
@@ -763,8 +763,6 @@ def main():
             text_column_name=data_args.eval_text_column_name,
             use_pseudo_labels=False
         )
-        if data_args.eval_text_column_name != "text":
-            raw_datasets["eval"] = raw_datasets["eval"].rename_column(data_args.eval_text_column_name, "text")
 
     if not training_args.do_train and not training_args.do_eval:
         raise ValueError(
@@ -1520,6 +1518,7 @@ def main():
                             epoch=epoch,
                             prefix="eval",
                         )
+                        eval_metrics = []
 
                     # flush the train metrics
                     train_start = time.time()
