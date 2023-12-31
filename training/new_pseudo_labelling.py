@@ -32,13 +32,12 @@ import evaluate
 import numpy as np
 import torch
 import transformers
-from utils import create_local_dataset
+from utils import create_local_dataset, get_all_transcription, get_all_audio_files
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from datasets import (
     DatasetDict,
-    IterableDatasetDict,
-    load_dataset,
+    IterableDatasetDict
 )
 from huggingface_hub import HfFolder, Repository, create_repo, get_full_repo_name
 from torch.utils.data import DataLoader
@@ -55,6 +54,7 @@ from transformers import (
 from transformers.models.whisper.english_normalizer import EnglishTextNormalizer, BasicTextNormalizer
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
+from bucket_by_audio_length import BucketByAudioLength
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.34.0.dev0")
@@ -144,23 +144,6 @@ class DataTrainingArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
-
-    # dataset_name: str = field(
-    #     default=None,
-    #     metadata={"help": "The name of the dataset to use (via the datasets library)."},
-    # )
-    # dataset_config_name: Optional[str] = field(
-    #     default=None,
-    #     metadata={"help": "The configuration name of the dataset to use (via the datasets library)."},
-    # )
-    # dataset_cache_dir: Optional[str] = field(
-    #     default=None,
-    #     metadata={"help": "Path to cache directory for saving and loading datasets"},
-    # )
-    # overwrite_cache: bool = field(
-    #     default=False,
-    #     metadata={"help": "Overwrite the cached training and evaluation sets"},
-    # )
     preprocessing_num_workers: Optional[int] = field(
         default=None,
         metadata={"help": "The number of processes to use for the preprocessing."},
@@ -469,7 +452,9 @@ def main():
     data_split_wav_dirs = data_args.dataset_split_wav_dirs.split("+")
     data_split_transcript_files = data_args.dataset_split_transcript_files.split("+")
     for split, wav_dir, transcript_file in zip(data_splits, data_split_wav_dirs, data_split_transcript_files):
-        raw_datasets[split] = create_local_dataset(wav_directory=wav_dir, metadata_file=transcript_file)
+        all_audio_files = get_all_audio_files(directory=wav_dir)
+        all_transcription = get_all_transcription(transcription_path=transcript_file)
+        raw_datasets[split] = create_local_dataset(all_audio_files, all_transcription)
 
     if data_args.audio_column_name not in next(iter(raw_datasets.values())).column_names:
         raise ValueError(
@@ -730,6 +715,7 @@ def main():
             collate_fn=data_collator,
             num_workers=dataloader_num_workers,
             pin_memory=True,
+            batch_sampler=BucketByAudioLength(dataset=vectorized_datasets[split])
         )
 
         eval_loader = accelerator.prepare(eval_loader)
