@@ -75,10 +75,3 @@ def create_local_dataset(all_wav_paths: List[str],
 
     dataset = Dataset.from_dict(dataset_dict).cast_column("audio", Audio())
     return dataset
-
-
-if __name__ == '__main__':
-    a = get_all_transcription('/home/hoang/Downloads/archive/vlsp2020_train_set_02')
-    b = get_all_audio_files('/home/hoang/Downloads/archive/vlsp2020_train_set_02')
-    ds = create_local_dataset(all_wav_paths=b, all_transcriptions=a)
-    print(ds[0])
