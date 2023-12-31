@@ -35,7 +35,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-from utils import create_local_dataset
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from datasets import (
@@ -44,8 +43,6 @@ from datasets import (
     IterableDatasetDict,
     Dataset,
     concatenate_datasets,
-    interleave_datasets,
-    load_dataset,
 )
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
@@ -135,15 +132,15 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    train_arrow_file: str = field(
-        default="/path/to/the/train/.arrow file",
+    train_datadir: str = field(
+        default="/path/to/the/train/processed data directory",
         metadata={
             "help": "Path to the directory contains all audio files of train dataset split"
         }
     )
 
-    valid_arrow_file: str = field(
-        default="/path/to/the/valid/.arrow file",
+    valid_datadir: str = field(
+        default="/path/to/the/valid/processed data directory",
         metadata={
             "help": "Path to the directory contains all audio files of valid dataset split"
         }
@@ -538,12 +535,13 @@ def convert_dataset_str_to_list(
 
 
 def load_local_dataset(
-        arrow_file: str,
+        preprocessed_datadir: str,
         text_column_name: str,
         sampling_rate: Optional[int] = 16000,
         use_pseudo_labels: float = None,
 ) -> Dataset:
-    dataset = Dataset.from_file(arrow_file)
+    arrow_files = [os.path.abspath(file) for file in os.listdir(preprocessed_datadir) if file.endswith('.arrow')]
+    dataset = concatenate_datasets([Dataset.from_file(arrow_file) for arrow_file in arrow_files])
     # resample to specified sampling rate
     dataset = dataset.cast_column("audio", datasets.features.Audio(sampling_rate))
     dataset = dataset.rename_column(text_column_name, "text")
@@ -751,7 +749,7 @@ def main():
 
     if training_args.do_train:
         raw_datasets["train"] = load_local_dataset(
-            arrow_file=data_args.train_arrow_file,
+            preprocessed_datadir=data_args.train_datadir,
             text_column_name=data_args.text_column_name,
             use_pseudo_labels=data_args.use_pseudo_labels
         )
@@ -759,7 +757,7 @@ def main():
 
     if training_args.do_eval:
         raw_datasets["eval"] = load_local_dataset(
-            arrow_file=data_args.valid_arrow_file,
+            preprocessed_datadir=data_args.valid_datadir,
             text_column_name=data_args.eval_text_column_name,
             use_pseudo_labels=False
         )
